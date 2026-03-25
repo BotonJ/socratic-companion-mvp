@@ -1,0 +1,28 @@
+# 敏感文件
+*.pdf
+*.PDF
+*.txt
+*.TXT
+*.rtf
+*.RTF
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 临时文件
+*.tmp
+*.temp
+temp/
+tmp/
+
+# 日志
+*.log
+logs/

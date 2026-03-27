@@ -1,5 +1,7 @@
 # 学习伴侣系统 (Learning Companion System)
 
+> 苏格拉底教学法的最小可运行系统
+
 一个基于Prompt驱动的轻量级AI学习伴侣系统，融合苏格拉底教学法和虚拟角色扮演，让学习变得高效有趣。
 
 ## 项目简介
@@ -22,18 +24,13 @@
 
 1. 克隆本项目：
 ```bash
-git clone https://github.com/your-repo/projectc.git
-cd projectc
+git clone https://github.com/BotonJ/socratic-companion-mvp.git
+cd socratic-companion-mvp
 ```
 
-2. 将学习材料（PDF/MD）放入项目目录
+2. 将学习材料（PDF/MD）放入 `materials/` 目录
 
-3. 在Claude Code中读取以下文件：
-   - `templates/system.md` - 系统核心指令
-   - `personas/sanqyue-seven.md` - 角色人设
-   - `session/progress.md` - 学习进度
-
-4. 开始学习！
+3. 让 Claude 读取 `START.md`，然后说"开始上课"
 
 ### 使用其他工具
 
@@ -45,7 +42,7 @@ cd projectc
 ## 项目结构
 
 ```
-projectc/
+socratic-companion-mvp/
 ├── templates/           # Prompt模板库
 │   └── system.md      # 系统核心（最高指令）
 │
@@ -54,8 +51,10 @@ projectc/
 │
 ├── session/            # 会话状态
 │   ├── progress.md    # 学习进度
-│   └── diary.md       # 学习日记
+│   ├── diary.md       # 学习日记
+│   └── notes.md       # 学习笔记
 │
+├── materials/          # 教材目录
 ├── agents/             # Agent定义（预留）
 ├── skills/             # 技能定义（预留）
 └── commands/           # 斜杠命令（预留）
@@ -86,10 +85,6 @@ projectc/
 - [ ] 多模态支持（图像/图表）
 - [ ] 协作学习模式
 - [ ] 学习分析报表
-
-## 贡献
-
-欢迎提交Issue和Pull Request！
 
 ## 许可证
 

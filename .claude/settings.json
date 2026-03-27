@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat \"$PWD/templates/system.md\" 2>/dev/null || echo '[学习伴侣系统] system.md 未找到，请检查文件路径'"
+          }
+        ]
+      }
+    ]
+  }
+}

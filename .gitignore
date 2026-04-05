@@ -26,3 +26,7 @@ tmp/
 # 日志
 *.log
 logs/
+
+# 学习数据（不推送）
+materials/
+session/

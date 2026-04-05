@@ -1,33 +1,51 @@
 #!/usr/bin/env python3
 """
-PDF 文本提取 + Chunk分割
-  支持PDF（调用pdftotext）+ TXT输入 + 剪贴板
+文档文本提取 + Chunk分割
 
-  用法：
-      # 处理PDF文件（默认2000字符chunk）
-      python3 pdf_extract.py input.pdf > output.txt
+支持格式：
+  - PDF（调用pdftotext）
+  - PPT/PPTX（使用 python-pptx）
+  - TXT 文件
+  - 剪贴板（支持 macOS/Linux/Windows）
 
-      # 处理TXT文件
-      python3 pdf_extract.py input.txt > output.txt
+用法：
+  # 处理单个文件
+  python3 doc_extract.py input.pdf > output.md
+  python3 doc_extract.py input.pptx > output.md
+  python3 doc_extract.py input.txt > output.md
 
-      # 从剪贴板读取
-      python3 pdf_extract.py > output.txt
+  # 从剪贴板读取
+  python3 doc_extract.py > output.md
 
-      # 自定义chunk大小
-      python3 pdf_extract.py input.pdf --chunk-size 3000 > output.txt
+  # 自定义chunk大小
+  python3 doc_extract.py input.pdf --chunk-size 3000 > output.md
 
-      # 添加frontmatter
-      python3 pdf_extract.py input.pdf --frontmatter title="论文标题" author="作者" type="paper" > output.txt
+  # 添加frontmatter
+  python3 doc_extract.py input.pdf --frontmatter title="标题" author="作者" > output.md
 
-      # 添加chunk标记
-      python3 pdf_extract.py input.pdf --chunk-prefix "## " > output.txt
-  """
+  # 批量处理目录（PPT专用）
+  python3 doc_extract.py --batch /path/to/ppt/dir --output ./materials/
+
+  # 批量处理，保留目录结构
+  python3 doc_extract.py --batch /path/to/ppt/dir --output ./materials/ --preserve-structure
+"""
+
 import re
 import sys
+import os
 import subprocess
 import argparse
-from typing import List
+import platform
+from typing import List, Optional
 from datetime import datetime
+from pathlib import Path
+
+# 尝试导入 python-pptx
+try:
+    from pptx import Presentation
+    HAS_PPTX = True
+except ImportError:
+    HAS_PPTX = False
 
 
 def is_pdf_file(filepath: str) -> bool:
@@ -35,10 +53,15 @@ def is_pdf_file(filepath: str) -> bool:
     return filepath.lower().endswith('.pdf')
 
 
+def is_ppt_file(filepath: str) -> bool:
+    """判断是否为PPT文件"""
+    return filepath.lower().endswith(('.ppt', '.pptx'))
+
+
 def pdf_to_text(pdf_path: str) -> str:
     """
     调用 pdftotext 提取PDF文本
-    支持多种编码检测（P0修复）
+    支持多种编码检测
     """
     # 检查 pdftotext 是否可用
     try:
@@ -50,10 +73,10 @@ def pdf_to_text(pdf_path: str) -> str:
         print("错误：pdftotext 未安装", file=sys.stderr)
         print("macOS: brew install poppler", file=sys.stderr)
         print("Ubuntu/Debian: sudo apt-get install poppler-utils", file=sys.stderr)
+        print("Windows: scoop install poppler 或 choco install poppler", file=sys.stderr)
         sys.exit(1)
 
     try:
-        # 使用 -layout 保留布局，输出到stdout
         with open(pdf_path, 'rb') as f:
             pdf_data = f.read()
         result = subprocess.run(
@@ -65,25 +88,127 @@ def pdf_to_text(pdf_path: str) -> str:
         )
         raw = result.stdout
 
-        # P0修复：尝试多种编码
+        # 尝试多种编码
         encodings = ['utf-8', 'latin-1', 'gbk', 'iso-8859-1', 'cp1252']
         for encoding in encodings:
             try:
                 text = raw.decode(encoding)
-                # 验证解码质量：检查是否有大量无效字符
                 if '\ufffd' in text[:1000] and encoding == 'utf-8':
-                    continue  # UTF-8失败，继续尝试其他编码
+                    continue
                 return text
             except UnicodeDecodeError:
                 continue
 
-        # 所有编码都失败，使用 replace 模式
         return raw.decode('utf-8', errors='replace')
 
     except subprocess.CalledProcessError as e:
         print(f"错误：PDF提取失败 - {e}", file=sys.stderr)
-        if e.stderr:
-            print(f"错误信息: {e.stderr.decode('utf-8', errors='replace')}", file=sys.stderr)
+        sys.exit(1)
+
+
+def ppt_to_text(ppt_path: str) -> str:
+    """
+    使用 python-pptx 提取PPT文本
+    返回格式化的Markdown文本
+    """
+    if not HAS_PPTX:
+        print("错误：python-pptx 未安装", file=sys.stderr)
+        print("请运行: pip install python-pptx", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        prs = Presentation(ppt_path)
+        lines = []
+
+        for i, slide in enumerate(prs.slides, 1):
+            slide_texts = []
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    text = shape.text.strip()
+                    # 跳过重复的页眉（通常很短且以"项目"开头）
+                    if len(text) < 15 and (text.startswith("项目") or text.startswith("任务")):
+                        continue
+                    slide_texts.append(text)
+
+            if slide_texts:
+                lines.append(f"## 第 {i} 页")
+                lines.append("")
+                for text in slide_texts:
+                    lines.append(text)
+                    lines.append("")
+
+        return '\n'.join(lines)
+
+    except Exception as e:
+        print(f"错误：PPT提取失败 - {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def ppt_to_md(ppt_path: str, title: str = None) -> str:
+    """
+    将PPT转换为结构化的Markdown文件
+    适合教学使用
+    """
+    if not HAS_PPTX:
+        print("错误：python-pptx 未安装", file=sys.stderr)
+        print("请运行: pip install python-pptx", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        prs = Presentation(ppt_path)
+        lines = []
+
+        # 从文件名提取标题
+        if title is None:
+            title = Path(ppt_path).stem
+
+        lines.append(f"# {title}")
+        lines.append("")
+        lines.append(f"> 来源：PPT课件")
+        lines.append(f"> 提取时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        lines.append("")
+
+        for i, slide in enumerate(prs.slides, 1):
+            slide_texts = []
+            title_text = None
+
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    text = shape.text.strip()
+
+                    # 识别标题（通常在前面，较短）
+                    if not title_text and len(text) < 50 and not text.startswith("（"):
+                        # 检查是否像标题（不以标点结尾）
+                        if not text[-1] in '。！？，、；：':
+                            title_text = text
+                            continue
+
+                    # 跳过页眉
+                    if len(text) < 15 and (text.startswith("项目") or text.startswith("任务")):
+                        continue
+
+                    slide_texts.append(text)
+
+            if slide_texts or title_text:
+                lines.append(f"## 第 {i} 页")
+                lines.append("")
+
+                if title_text:
+                    lines.append(f"### {title_text}")
+                    lines.append("")
+
+                for text in slide_texts:
+                    # 处理列表项
+                    if text.startswith("（") or text.startswith("(") or re.match(r'^\d+[\.、）]', text):
+                        lines.append(f"- {text}")
+                    else:
+                        lines.append(text)
+                    lines.append("")
+
+        return '\n'.join(lines)
+
+    except Exception as e:
+        print(f"错误：PPT转换失败 - {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -94,17 +219,32 @@ def read_text_from_file(filepath: str) -> str:
 
 
 def read_text_from_clipboard() -> str:
-    """从剪贴板读取文本（macOS/Linux）"""
+    """从剪贴板读取文本（跨平台）"""
+    system = platform.system()
+
     try:
-        # macOS
-        return subprocess.check_output(['pbpaste']).decode('utf-8')
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        try:
-            # Linux
+        if system == 'Darwin':  # macOS
+            return subprocess.check_output(['pbpaste']).decode('utf-8')
+        elif system == 'Linux':
             return subprocess.check_output(['xclip', '-o', '-selection', 'clipboard']).decode('utf-8')
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("错误：无法从剪贴板读取", file=sys.stderr)
+        elif system == 'Windows':
+            # 方法1：pyperclip（推荐）
+            try:
+                import pyperclip
+                return pyperclip.paste()
+            except ImportError:
+                # 方法2：PowerShell
+                result = subprocess.run(
+                    ['powershell', '-command', 'Get-Clipboard'],
+                    capture_output=True, text=True
+                )
+                return result.stdout
+        else:
+            print(f"错误：不支持的系统 {system}", file=sys.stderr)
             sys.exit(1)
+    except Exception as e:
+        print(f"错误：无法从剪贴板读取 - {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def clean_soft_hyphen(text: str) -> str:
@@ -123,7 +263,7 @@ def remove_page_numbers(line: str) -> str:
 def normalize_whitespace(text: str) -> str:
     """标准化空白字符"""
     text = re.sub(r'[ \t]+', ' ', text)
-    text = re.sub(r'\n{3,}', '\n\n')
+    text = re.sub(r'\n{3,}', '\n\n', text)
     return text
 
 
@@ -161,44 +301,31 @@ def extract_paragraphs(text: str, keep_page_numbers: bool = False) -> List[str]:
 
 
 def split_by_char_count(text: str, max_chars: int) -> List[str]:
-    """
-    按字符数分割（P0修复：在单词边界切断）
-
-    策略：
-    - 接近上限时寻找最近的标点+空格处切断
-    - 如果没有标点，在空格处切断
-    - 确保chunk不会太小（至少100字符）
-    """
+    """按字符数分割（在单词边界切断）"""
     chunks = []
     current_chunk = []
     current_length = 0
 
-    # 标点符号列表
     break_chars = '.!?,;。！？，；:：'
-    # 单词分隔符
     word_breaks = ' \t\n'
 
     for char in text:
         current_chunk.append(char)
         current_length += 1
 
-        # 接近上限时寻找切断点
-        if current_length >= max_chars - 50:  # 提前50字符开始寻找
+        if current_length >= max_chars - 50:
             if char in break_chars:
-                # 标点符号，检查后面是否是空格
                 chunks.append(''.join(current_chunk).strip())
                 current_chunk = []
                 current_length = 0
             elif char in word_breaks and current_length > max_chars:
-                # 超过上限且是空格，在空格处切断
-                chunks.append(''.join(current_chunk[:-1]).strip())  # 不包含空格
+                chunks.append(''.join(current_chunk[:-1]).strip())
                 current_chunk = []
                 current_length = 0
 
     if current_chunk:
         chunks.append(''.join(current_chunk).strip())
 
-    # 过滤空chunk
     return [c for c in chunks if c]
 
 
@@ -258,7 +385,6 @@ def generate_frontmatter(frontmatter_dict: dict, chunk_count: int, total_chars: 
         else:
             lines.append(f"{key}: {value}")
 
-    # 自动添加的元数据
     if 'date' not in frontmatter_dict:
         lines.append(f"date: {datetime.now().strftime('%Y-%m-%d')}")
     if 'time' not in frontmatter_dict:
@@ -292,40 +418,140 @@ def format_chunk(chunk: str, index: int, total: int,
         return '\n'.join(parts)
 
 
+def process_single_file(filepath: str, args) -> tuple:
+    """
+    处理单个文件
+    返回 (chunks, paragraphs, total_chars)
+    """
+    if is_pdf_file(filepath):
+        print(f"正在提取PDF: {filepath}", file=sys.stderr)
+        text = pdf_to_text(filepath)
+    elif is_ppt_file(filepath):
+        print(f"正在提取PPT: {filepath}", file=sys.stderr)
+        text = ppt_to_text(filepath)
+    else:
+        print(f"正在读取文件: {filepath}", file=sys.stderr)
+        text = read_text_from_file(filepath)
+
+    paragraphs = extract_paragraphs(text, keep_page_numbers=args.no_page_numbers)
+
+    if args.max_paragraphs > 0:
+        chunks = split_by_paragraphs(paragraphs, args.max_paragraphs)
+    elif args.chunk_size > 0:
+        full_text = '\n\n'.join(paragraphs)
+        if args.split_by_sentence:
+            chunks = split_by_sentence(full_text, args.chunk_size)
+        else:
+            chunks = split_by_char_count(full_text, args.chunk_size)
+    else:
+        chunks = ['\n\n'.join(paragraphs)]
+
+    total_chars = sum(len(c) for c in chunks)
+
+    return chunks, paragraphs, total_chars
+
+
+def batch_process_ppt(input_dir: str, output_dir: str, preserve_structure: bool = False):
+    """
+    批量处理PPT目录
+
+    Args:
+        input_dir: 输入目录路径
+        output_dir: 输出目录路径
+        preserve_structure: 是否保留原目录结构
+    """
+    if not HAS_PPTX:
+        print("错误：python-pptx 未安装", file=sys.stderr)
+        print("请运行: pip install python-pptx", file=sys.stderr)
+        sys.exit(1)
+
+    input_path = Path(input_dir)
+    output_path = Path(output_dir)
+
+    if not input_path.exists():
+        print(f"错误：输入目录不存在 - {input_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    # 创建输出目录
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # 查找所有PPT文件
+    ppt_files = list(input_path.rglob("*.pptx")) + list(input_path.rglob("*.ppt"))
+
+    if not ppt_files:
+        print(f"警告：未找到PPT文件 - {input_dir}", file=sys.stderr)
+        return
+
+    print(f"找到 {len(ppt_files)} 个PPT文件", file=sys.stderr)
+
+    success_count = 0
+    fail_count = 0
+
+    for ppt_file in ppt_files:
+        try:
+            # 计算输出路径
+            if preserve_structure:
+                rel_path = ppt_file.relative_to(input_path)
+                output_file = output_path / rel_path.with_suffix('.md')
+                output_file.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                output_file = output_path / (ppt_file.stem + '.md')
+
+            # 转换PPT
+            md_content = ppt_to_md(str(ppt_file))
+
+            # 写入文件
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(md_content)
+
+            print(f"✅ {ppt_file.name} → {output_file.name}", file=sys.stderr)
+            success_count += 1
+
+        except Exception as e:
+            print(f"❌ {ppt_file.name}: {e}", file=sys.stderr)
+            fail_count += 1
+
+    print(f"\n---", file=sys.stderr)
+    print(f"批量处理完成:", file=sys.stderr)
+    print(f"  成功: {success_count}", file=sys.stderr)
+    print(f"  失败: {fail_count}", file=sys.stderr)
+    print(f"  输出目录: {output_path}", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='PDF 文本提取 + Chunk分割',
+        description='文档文本提取 + Chunk分割（支持PDF/PPT/TXT）',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
   # 处理PDF文件
-  python3 pdf_extract.py input.pdf > output.txt
+  python3 doc_extract.py input.pdf > output.md
+
+  # 处理PPT文件
+  python3 doc_extract.py input.pptx > output.md
 
   # 处理TXT文件
-  python3 pdf_extract.py input.txt > output.txt
+  python3 doc_extract.py input.txt > output.md
 
   # 从剪贴板
-  python3 pdf_extract.py > output.txt
+  python3 doc_extract.py > output.md
 
   # 自定义chunk大小
-  python3 pdf_extract.py input.pdf --chunk-size 3000 > output.txt
-
-  # 按句子分割
-  python3 pdf_extract.py input.pdf --chunk-size 2000 --split-by-sentence > output.txt
-
-  # 添加chunk标记
-  python3 pdf_extract.py input.pdf --chunk-prefix "## " > output.txt
+  python3 doc_extract.py input.pdf --chunk-size 3000 > output.md
 
   # 添加frontmatter
-  python3 pdf_extract.py input.pdf --frontmatter title="论文" author="作者" type="paper" lang="en" > output.txt
+  python3 doc_extract.py input.pdf --frontmatter title="标题" type="paper" > output.md
 
-  # 完整示例
-  python3 pdf_extract.py paper.pdf --chunk-size 4000 --chunk-prefix "## " --frontmatter title="研究" type="paper" lang="en" > output.txt
+  # 批量处理PPT目录
+  python3 doc_extract.py --batch /path/to/ppts --output ./materials/
+
+  # 批量处理，保留目录结构
+  python3 doc_extract.py --batch /path/to/ppts --output ./materials/ --preserve-structure
         """
     )
 
     parser.add_argument('input_file', nargs='?',
-                       help='输入文件（PDF/TXT，可选，默认从剪贴板）')
+                       help='输入文件（PDF/PPT/TXT，可选，默认从剪贴板）')
     parser.add_argument('--chunk-size', type=int, default=2000,
                        help='按字符数分割chunk（默认：2000）')
     parser.add_argument('--max-paragraphs', type=int, default=0,
@@ -337,13 +563,27 @@ def main():
     parser.add_argument('--chunk-suffix', type=str,
                        help='chunk后缀，可用{i}=索引,{n}=总数')
     parser.add_argument('--chunk-template', type=str,
-                       help='自定义chunk模板，可用: {index},{total},{chunk},{chars}')
+                       help='自定义chunk模板')
     parser.add_argument('--no-page-numbers', action='store_true',
                        help='保留页码')
     parser.add_argument('--frontmatter', nargs='*', metavar='KEY=VALUE',
-                       help='添加YAML frontmatter（如 title="标题" type="book"）')
+                       help='添加YAML frontmatter')
+
+    # 批量处理选项
+    parser.add_argument('--batch', type=str, metavar='DIR',
+                       help='批量处理PPT目录')
+    parser.add_argument('--output', type=str, metavar='DIR',
+                       help='批量处理输出目录')
+    parser.add_argument('--preserve-structure', action='store_true',
+                       help='批量处理时保留目录结构')
 
     args = parser.parse_args()
+
+    # 批量处理模式
+    if args.batch:
+        output_dir = args.output or './materials/'
+        batch_process_ppt(args.batch, output_dir, args.preserve_structure)
+        return
 
     # 解析frontmatter
     frontmatter_dict = {}
@@ -356,34 +596,14 @@ def main():
             else:
                 frontmatter_dict[item] = True
 
-    # 读取文本（支持PDF/TXT/剪贴板）
+    # 读取文本
     if args.input_file:
-        filepath = args.input_file
-        if is_pdf_file(filepath):
-            print(f"正在提取PDF: {filepath}", file=sys.stderr)
-            text = pdf_to_text(filepath)
-        else:
-            text = read_text_from_file(filepath)
+        chunks, paragraphs, total_chars = process_single_file(args.input_file, args)
     else:
         text = read_text_from_clipboard()
-
-    # 提取段落
-    paragraphs = extract_paragraphs(text, keep_page_numbers=args.no_page_numbers)
-
-    # 选择分割策略
-    if args.max_paragraphs > 0:
-        chunks = split_by_paragraphs(paragraphs, args.max_paragraphs)
-    elif args.chunk_size > 0:
-        full_text = '\n\n'.join(paragraphs)
-        if args.split_by_sentence:
-            chunks = split_by_sentence(full_text, args.chunk_size)
-        else:
-            chunks = split_by_char_count(full_text, args.chunk_size)
-    else:
+        paragraphs = extract_paragraphs(text, keep_page_numbers=args.no_page_numbers)
         chunks = ['\n\n'.join(paragraphs)]
-
-    # 统计
-    total_chars = sum(len(c) for c in chunks)
+        total_chars = sum(len(c) for c in chunks)
 
     # 输出frontmatter
     if frontmatter_dict:
@@ -402,7 +622,7 @@ def main():
         if i < len(chunks):
             print()
 
-    # 统计信息（stderr）
+    # 统计信息
     print(f"\n---", file=sys.stderr)
     print(f"提取统计:", file=sys.stderr)
     print(f"  段落数: {len(paragraphs)}", file=sys.stderr)
